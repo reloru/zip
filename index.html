@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Zip</title>
+  <meta name="description" content="Create, compress and extract ZIP and TAR archives in your browser, with optional AES-256 password protection. Files never leave your device.">
+  <meta name="color-scheme" content="light dark">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='4' y='2' width='24' height='28' rx='4' fill='%232f6fdf'/%3E%3Cpath d='M16 4v2h-2v2h2v2h-2v2h2v2h-2v2h2' stroke='%23fff' stroke-width='2' fill='none'/%3E%3Crect x='13' y='17' width='6' height='7' rx='1.5' fill='%23fff'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main>
+    <header class="masthead">
+      <h1>Zip</h1>
+      <p>Create and extract archives in your browser. Your files never leave this device.</p>
+    </header>
+
+    <nav class="tabs" role="tablist">
+      <button role="tab" id="tab-create" aria-controls="panel-create" aria-selected="true">Create</button>
+      <button role="tab" id="tab-extract" aria-controls="panel-extract" aria-selected="false">Extract</button>
+    </nav>
+
+    <section id="panel-create" role="tabpanel" aria-labelledby="tab-create">
+      <div class="drop" id="create-drop">
+        <p class="drop-title">Drop files or folders here</p>
+        <div class="row">
+          <label class="btn">Add files<input type="file" id="file-input" class="visually-hidden" multiple></label>
+          <label class="btn" id="folder-label">Add folder<input type="file" id="folder-input" class="visually-hidden" webkitdirectory multiple></label>
+        </div>
+      </div>
+
+      <div id="create-list-wrap" class="list-wrap" hidden>
+        <div class="list-head">
+          <span id="create-summary"></span>
+          <button type="button" class="link" id="clear-btn">Clear all</button>
+        </div>
+        <ul id="create-list" class="list"></ul>
+      </div>
+
+      <div class="options">
+        <div class="field">
+          <span class="label">Format</span>
+          <div class="segmented" role="radiogroup" aria-label="Format">
+            <label><input type="radio" name="format" value="zip" checked><span>ZIP</span></label>
+            <label><input type="radio" name="format" value="tar.gz"><span>TAR.GZ</span></label>
+            <label><input type="radio" name="format" value="tar"><span>TAR</span></label>
+          </div>
+        </div>
+
+        <div class="field">
+          <label class="label" for="archive-name">Archive name</label>
+          <div class="name-row">
+            <input type="text" id="archive-name" value="archive" autocomplete="off" spellcheck="false">
+            <span id="ext-label" class="ext">.zip</span>
+          </div>
+        </div>
+
+        <div class="field zip-only">
+          <label class="label" for="level">Compression</label>
+          <select id="level">
+            <option value="0">None (store only, fastest)</option>
+            <option value="1">Fast</option>
+            <option value="5" selected>Normal</option>
+            <option value="9">Maximum (slowest)</option>
+          </select>
+        </div>
+
+        <div class="field zip-only">
+          <span class="label">Password <span class="muted">(optional)</span></span>
+          <div class="pw-row">
+            <input type="password" id="password" placeholder="Password" autocomplete="new-password">
+            <button type="button" class="btn small" id="pw-toggle" aria-pressed="false">Show</button>
+          </div>
+          <input type="password" id="password-confirm" placeholder="Confirm password" autocomplete="new-password">
+          <select id="encryption" aria-label="Encryption method">
+            <option value="aes">AES-256 (strong)</option>
+            <option value="zipcrypto">ZipCrypto (legacy, weak)</option>
+          </select>
+          <p class="hint" id="enc-hint"></p>
+        </div>
+
+        <p class="hint tar-only" hidden>TAR archives cannot be password protected. Choose ZIP to add a password.</p>
+
+        <label class="check" id="save-picker-row" hidden>
+          <input type="checkbox" id="save-picker"> Save straight to disk (better for very large archives)
+        </label>
+      </div>
+
+      <div class="actions">
+        <button type="button" class="primary" id="create-btn" disabled>Create archive</button>
+        <button type="button" class="btn" id="create-cancel" hidden>Cancel</button>
+      </div>
+      <div class="progress" id="create-progress" hidden><div class="bar"><span></span></div><p class="progress-text"></p></div>
+      <div id="create-result" class="result" aria-live="polite"></div>
+    </section>
+
+    <section id="panel-extract" role="tabpanel" aria-labelledby="tab-extract" hidden>
+      <div class="drop" id="extract-drop">
+        <p class="drop-title">Drop an archive here</p>
+        <p class="muted small">.zip (including password protected), .tar, .tar.gz, .tgz, .gz</p>
+        <div class="row">
+          <label class="btn">Choose archive<input type="file" id="archive-input" class="visually-hidden"></label>
+        </div>
+      </div>
+
+      <div id="extract-info" class="result" aria-live="polite"></div>
+
+      <form id="unlock-form" class="unlock" hidden>
+        <label class="label" for="extract-password">This archive is password protected</label>
+        <div class="pw-row">
+          <input type="password" id="extract-password" placeholder="Password" autocomplete="current-password">
+          <button type="submit" class="primary small">Unlock</button>
+        </div>
+        <p class="error" id="unlock-error" aria-live="polite"></p>
+      </form>
+
+      <div id="extract-actions" class="actions wrap" hidden>
+        <button type="button" class="primary" id="save-folder-btn" hidden>Save all to folder</button>
+        <button type="button" class="btn" id="download-all-btn">Download all</button>
+        <button type="button" class="btn" id="convert-btn" hidden>Convert to ZIP</button>
+        <button type="button" class="btn" id="extract-cancel" hidden>Cancel</button>
+      </div>
+      <div class="progress" id="extract-progress" hidden><div class="bar"><span></span></div><p class="progress-text"></p></div>
+
+      <div id="extract-list-wrap" class="list-wrap" hidden>
+        <div class="list-head"><span id="extract-summary"></span></div>
+        <ul id="extract-list" class="list"></ul>
+      </div>
+    </section>
+
+    <footer>
+      Everything runs locally in your browser; nothing is uploaded.
+      <a href="https://github.com/reloru/zip">Source</a> · Uses <a href="https://github.com/gildas-lormeau/zip.js">zip.js</a> (BSD-3-Clause)
+    </footer>
+  </main>
+
+  <script src="vendor/zip.min.js"></script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
