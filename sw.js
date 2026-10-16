@@ -1,4 +1,4 @@
-const CACHE = "zip-v2";
+const CACHE = "zip-v3";
 const ASSETS = [
   "./",
   "index.html",
@@ -7,11 +7,11 @@ const ASSETS = [
   "tar.js",
   "vendor/zip.min.js",
   "manifest.webmanifest",
-  "icons/icon.svg",
+  "icons/favicon-16.png",
+  "icons/favicon-32.png",
   "icons/icon-192.png",
   "icons/icon-512.png",
-  "icons/icon-maskable-512.png",
-  "icons/apple-touch-icon.png"
+  "icons/icon-maskable-512.png"
 ];
 
 self.addEventListener("install", (event) => {
