@@ -1,4 +1,4 @@
-const CACHE = "zip-v3";
+const CACHE = "zip-v4";
 const ASSETS = [
   "./",
   "index.html",

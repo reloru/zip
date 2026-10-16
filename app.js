@@ -551,14 +551,10 @@ function renderExtractList() {
   $("#extract-list-wrap").hidden = files.length === 0;
   $("#extract-summary").textContent = plural(files.length, "file") + (folders.size ? ` in ${plural(folders.size, "folder")}` : "");
   files.slice(0, LIST_LIMIT).forEach((entry) => {
-    list.append(el("li", {},
-      pathMeta(entry.path, { prefix: entry.encrypted && locked ? "🔒 " : "" }),
-      el("span", { class: "size" }, formatBytes(entry.size)),
-      el("button", {
-        type: "button", class: "icon-btn", "aria-label": `Download ${entry.path}`, title: "Download",
-        disabled: (entry.encrypted && locked) || busy, onclick: () => extractOne(entry)
-      }, "↓")
-    ));
+    entry.sizeEl = el("span", { class: "size" }, formatBytes(entry.size));
+    entry.btn = el("button", { type: "button", disabled: (entry.encrypted && locked) || busy, onclick: () => rowAction(entry) });
+    setRowState(entry, entry.state || "idle");
+    list.append(el("li", {}, pathMeta(entry.path, { prefix: entry.encrypted && locked ? "🔒 " : "" }), entry.sizeEl, entry.btn));
   });
   if (files.length > LIST_LIMIT) list.append(el("li", { class: "more" }, `and ${files.length - LIST_LIMIT} more`));
 }
@@ -614,21 +610,61 @@ async function runExtractTask(task) {
   }
 }
 
+const ROW_STATES = {
+  idle: { label: "↓", aria: "Download", title: "Download" },
+  working: { label: "…", aria: "Extracting", title: "Extracting" },
+  ready: { label: "Save", aria: "Save", title: "Save" },
+  done: { label: "✓", aria: "Download again:", title: "Saved. Tap to save again" }
+};
+
+function setRowState(entry, state) {
+  entry.state = state;
+  const { label, aria, title } = ROW_STATES[state];
+  entry.btn.className = `icon-btn row-action ${state}`;
+  entry.btn.textContent = label;
+  entry.btn.title = title;
+  entry.btn.setAttribute("aria-label", `${aria} ${entry.path}`);
+}
+
+async function saveRowFile(entry) {
+  if (isTouch && canShare([entry.file])) {
+    try {
+      await navigator.share({ files: [entry.file] });
+    } catch (e) {
+      if (isAbort(e)) return setRowState(entry, "ready");
+      if (e.name !== "NotAllowedError") throw e;
+      if (entry.state === "ready") triggerDownload(entry.file, entry.file.name);
+      else return setRowState(entry, "ready");
+    }
+  } else {
+    triggerDownload(entry.file, entry.file.name);
+  }
+  entry.file = null;
+  setRowState(entry, "done");
+}
+
+async function rowAction(entry) {
+  if (entry.state === "working") return;
+  try {
+    if (entry.state === "ready" && entry.file) return await saveRowFile(entry);
+    setRowState(entry, "working");
+    const report = throttle((p, t) => { entry.sizeEl.textContent = t ? `${Math.round((p / t) * 100)}%` : "…"; });
+    const blob = await entryBlob(entry, { onprogress: report });
+    entry.sizeEl.textContent = formatBytes(entry.size);
+    entry.file = toFile(blob, baseName(entry.path));
+    await saveRowFile(entry);
+  } catch (e) {
+    entry.sizeEl.textContent = formatBytes(entry.size);
+    entry.file = null;
+    setRowState(entry, "idle");
+    extractError(`${baseName(entry.path)}: ${friendlyError(e, entry.encrypted)}`);
+  }
+}
+
 function showFilesCard(title, lines, files) {
   const card = outputCard({ title, lines, files, onError: (m) => $("#extract-result").append(el("p", { class: "error" }, m)) });
   showExtractResult(card.node);
   extractCard = card;
-}
-
-function extractOne(entry) {
-  return runExtractTask(async (signal, box) => {
-    const name = baseName(entry.path);
-    const report = throttle((p, t) => setProgress(box, t ? p / t : 1, `${name}: ${formatBytes(t ? entry.size * (p / t) : 0)} of ${formatBytes(entry.size)}`));
-    setProgress(box, 0, `Extracting ${name}…`);
-    const blob = await entryBlob(entry, { signal, onprogress: report });
-    showFilesCard(`${name} is ready`, [formatBytes(blob.size)], [toFile(blob, name)]);
-    if (!isTouch) triggerDownload(blob, name);
-  });
 }
 
 function makeBatchReporter(box, files) {
