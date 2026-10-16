@@ -2,11 +2,19 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Zip</title>
   <meta name="description" content="Create, compress and extract ZIP and TAR archives in your browser, with optional AES-256 password protection. Files never leave your device.">
   <meta name="color-scheme" content="light dark">
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='4' y='2' width='24' height='28' rx='4' fill='%232f6fdf'/%3E%3Cpath d='M16 4v2h-2v2h2v2h-2v2h2v2h-2v2h2' stroke='%23fff' stroke-width='2' fill='none'/%3E%3Crect x='13' y='17' width='6' height='7' rx='1.5' fill='%23fff'/%3E%3C/svg%3E">
+  <meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0f1115" media="(prefers-color-scheme: dark)">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Zip">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -23,7 +31,10 @@
 
     <section id="panel-create" role="tabpanel" aria-labelledby="tab-create">
       <div class="drop" id="create-drop">
-        <p class="drop-title">Drop files or folders here</p>
+        <p class="drop-title">
+          <span class="for-mouse">Drop files or folders here</span>
+          <span class="for-touch">Add the files you want to put in an archive</span>
+        </p>
         <div class="row">
           <label class="btn">Add files<input type="file" id="file-input" class="visually-hidden" multiple></label>
           <label class="btn" id="folder-label">Add folder<input type="file" id="folder-input" class="visually-hidden" webkitdirectory multiple></label>
@@ -51,7 +62,7 @@
         <div class="field">
           <label class="label" for="archive-name">Archive name</label>
           <div class="name-row">
-            <input type="text" id="archive-name" value="archive" autocomplete="off" spellcheck="false">
+            <input type="text" id="archive-name" value="archive" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="done">
             <span id="ext-label" class="ext">.zip</span>
           </div>
         </div>
@@ -69,10 +80,10 @@
         <div class="field zip-only">
           <span class="label">Password <span class="muted">(optional)</span></span>
           <div class="pw-row">
-            <input type="password" id="password" placeholder="Password" autocomplete="new-password">
+            <input type="password" id="password" placeholder="Password" autocomplete="new-password" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="next">
             <button type="button" class="btn small" id="pw-toggle" aria-pressed="false">Show</button>
           </div>
-          <input type="password" id="password-confirm" placeholder="Confirm password" autocomplete="new-password">
+          <input type="password" id="password-confirm" placeholder="Confirm password" autocomplete="new-password" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="done">
           <select id="encryption" aria-label="Encryption method">
             <option value="aes">AES-256 (strong)</option>
             <option value="zipcrypto">ZipCrypto (legacy, weak)</option>
@@ -87,17 +98,23 @@
         </label>
       </div>
 
-      <div class="actions">
-        <button type="button" class="primary" id="create-btn" disabled>Create archive</button>
-        <button type="button" class="btn" id="create-cancel" hidden>Cancel</button>
-      </div>
-      <div class="progress" id="create-progress" hidden><div class="bar"><span></span></div><p class="progress-text"></p></div>
       <div id="create-result" class="result" aria-live="polite"></div>
+
+      <div class="action-bar">
+        <div class="progress" id="create-progress" hidden><div class="bar"><span></span></div><p class="progress-text"></p></div>
+        <div class="actions">
+          <button type="button" class="primary" id="create-btn" disabled>Create archive</button>
+          <button type="button" class="btn" id="create-cancel" hidden>Cancel</button>
+        </div>
+      </div>
     </section>
 
     <section id="panel-extract" role="tabpanel" aria-labelledby="tab-extract" hidden>
       <div class="drop" id="extract-drop">
-        <p class="drop-title">Drop an archive here</p>
+        <p class="drop-title">
+          <span class="for-mouse">Drop an archive here</span>
+          <span class="for-touch">Open an archive to see what's inside</span>
+        </p>
         <p class="muted small">.zip (including password protected), .tar, .tar.gz, .tgz, .gz</p>
         <div class="row">
           <label class="btn">Choose archive<input type="file" id="archive-input" class="visually-hidden"></label>
@@ -109,7 +126,7 @@
       <form id="unlock-form" class="unlock" hidden>
         <label class="label" for="extract-password">This archive is password protected</label>
         <div class="pw-row">
-          <input type="password" id="extract-password" placeholder="Password" autocomplete="current-password">
+          <input type="password" id="extract-password" placeholder="Password" autocomplete="current-password" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="go">
           <button type="submit" class="primary small">Unlock</button>
         </div>
         <p class="error" id="unlock-error" aria-live="polite"></p>
@@ -119,18 +136,25 @@
         <button type="button" class="primary" id="save-folder-btn" hidden>Save all to folder</button>
         <button type="button" class="btn" id="download-all-btn">Download all</button>
         <button type="button" class="btn" id="convert-btn" hidden>Convert to ZIP</button>
-        <button type="button" class="btn" id="extract-cancel" hidden>Cancel</button>
       </div>
-      <div class="progress" id="extract-progress" hidden><div class="bar"><span></span></div><p class="progress-text"></p></div>
+
+      <div id="extract-result" class="result" aria-live="polite"></div>
 
       <div id="extract-list-wrap" class="list-wrap" hidden>
         <div class="list-head"><span id="extract-summary"></span></div>
         <ul id="extract-list" class="list"></ul>
       </div>
+
+      <div class="action-bar" id="extract-bar" hidden>
+        <div class="progress" id="extract-progress" hidden><div class="bar"><span></span></div><p class="progress-text"></p></div>
+        <div class="actions">
+          <button type="button" class="btn" id="extract-cancel" hidden>Cancel</button>
+        </div>
+      </div>
     </section>
 
     <footer>
-      Everything runs locally in your browser; nothing is uploaded.
+      Everything runs locally in your browser; nothing is uploaded. Works offline once loaded.
       <a href="https://github.com/reloru/zip">Source</a> · Uses <a href="https://github.com/gildas-lormeau/zip.js">zip.js</a> (BSD-3-Clause)
     </footer>
   </main>

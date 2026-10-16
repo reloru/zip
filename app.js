@@ -6,6 +6,12 @@ zip.configure({ useWebWorkers: true });
 const $ = (sel) => document.querySelector(sel);
 const LIST_LIMIT = 500;
 const MIME = { zip: "application/zip", "tar.gz": "application/gzip", tar: "application/x-tar" };
+const isTouch = matchMedia("(hover: none) and (pointer: coarse)").matches;
+const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
+
+if ("serviceWorker" in navigator && location.protocol !== "file:") {
+  navigator.serviceWorker.register("sw.js").catch(() => {});
+}
 
 function formatBytes(n) {
   if (!Number.isFinite(n)) return "";
@@ -14,6 +20,8 @@ function formatBytes(n) {
   while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
   return (i === 0 ? n : n.toFixed(n < 10 ? 2 : 1)) + " " + units[i];
 }
+
+const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
 function el(tag, props = {}, ...children) {
   const node = document.createElement(tag);
@@ -40,6 +48,20 @@ function baseName(path) {
   return parts[parts.length - 1] || "file";
 }
 
+function splitPath(path) {
+  const clean = path.replace(/\/+$/, "");
+  const slash = clean.lastIndexOf("/");
+  return slash < 0 ? { name: clean, dir: "" } : { name: clean.slice(slash + 1), dir: clean.slice(0, slash) };
+}
+
+function pathMeta(path, { isDir = false, prefix = "" } = {}) {
+  const { name, dir } = splitPath(path);
+  return el("span", { class: "meta", title: path },
+    el("span", { class: "fname" }, prefix + (isDir ? name + "/" : name)),
+    dir ? el("span", { class: "dirname" }, dir + "/") : null
+  );
+}
+
 function triggerDownload(blob, name) {
   const url = URL.createObjectURL(blob);
   const a = el("a", { href: url, download: name });
@@ -47,6 +69,28 @@ function triggerDownload(blob, name) {
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
+function toFile(blob, name) {
+  return blob instanceof File && blob.name === name ? blob : new File([blob], name, { type: blob.type || "application/octet-stream" });
+}
+
+function canShare(files) {
+  try {
+    return !!navigator.canShare && navigator.canShare({ files });
+  } catch {
+    return false;
+  }
+}
+
+const canShareAny = () => canShare([new File([""], "a.txt", { type: "text/plain" })]);
+
+async function share(files, onError) {
+  try {
+    await navigator.share({ files });
+  } catch (e) {
+    if (!isAbort(e)) onError(e.name === "NotAllowedError" ? "Your browser blocked sharing. Use Download instead." : friendlyError(e));
+  }
 }
 
 function isAbort(error) {
@@ -63,7 +107,39 @@ function friendlyError(error, encrypted) {
   if (msg === zip.ERR_UNSAFE_FILENAME) return "This archive was refused because it contains file paths (such as \"../\" or absolute paths) that could write files outside the folder you extract to.";
   if (msg === zip.ERR_UNSUPPORTED_ENCRYPTION) return "This archive uses an encryption method that is not supported.";
   if (msg === zip.ERR_UNSUPPORTED_COMPRESSION) return "This archive uses a compression method that is not supported.";
+  if (error?.name === "NotReadableError") return "The file could not be read. It may have been moved, or your browser lost access to it. Add it again.";
+  if (error?.name === "QuotaExceededError" || /out of memory|allocation failed/i.test(msg)) return "Your device ran out of memory or storage. Try fewer or smaller files.";
   return msg;
+}
+
+/**
+ * A card for one or more produced files: Download (single file) and, where the browser supports it,
+ * Share / Save to Files. Returns { node, release }; release() frees the object URL.
+ */
+function outputCard({ title, lines = [], files, onError }) {
+  const urls = [];
+  const buttons = [];
+  if (files.length === 1) {
+    const url = URL.createObjectURL(files[0]);
+    urls.push(url);
+    buttons.push(el("a", { class: "primary", href: url, download: files[0].name }, "Download"));
+  }
+  if (canShare(files)) {
+    const label = isIOS
+      ? (files.length === 1 ? "Share / Save to Files" : `Save ${files.length} files to Files`)
+      : (files.length === 1 ? "Share" : `Share ${files.length} files`);
+    buttons.push(el("button", { type: "button", class: files.length === 1 ? "btn share-btn" : "primary share-btn", onclick: () => share(files, onError) }, label));
+  }
+  const node = el("div", {},
+    el("p", { class: "ok" }, title),
+    ...lines.map((l) => el("p", { class: "muted" }, l)),
+    buttons.length ? el("div", { class: "row" }, ...buttons) : null
+  );
+  return { node, release: () => urls.forEach((u) => URL.revokeObjectURL(u)) };
+}
+
+function reveal(node) {
+  if (isTouch) requestAnimationFrame(() => node.scrollIntoView({ behavior: "smooth", block: "nearest" }));
 }
 
 function setProgress(box, fraction, text) {
@@ -120,7 +196,7 @@ window.addEventListener("drop", (e) => e.preventDefault());
 const items = [];
 const itemPaths = new Set();
 let createController = null;
-let lastResultUrl = null;
+let createCard = null;
 
 function uniquePath(path) {
   if (!itemPaths.has(path)) return path;
@@ -154,15 +230,16 @@ function renderCreateList() {
   const list = $("#create-list");
   list.replaceChildren();
   $("#create-list-wrap").hidden = items.length === 0;
-  $("#create-btn").disabled = items.length === 0 || !!createController;
   const files = items.filter((i) => !i.dir);
   const total = files.reduce((s, i) => s + i.file.size, 0);
-  $("#create-summary").textContent = `${files.length} file${files.length === 1 ? "" : "s"} · ${formatBytes(total)}`;
+  $("#create-btn").disabled = items.length === 0 || !!createController;
+  $("#create-btn").textContent = items.length ? `Create archive · ${formatBytes(total)}` : "Create archive";
+  $("#create-summary").textContent = `${plural(files.length, "file")} · ${formatBytes(total)}`;
   items.slice(0, LIST_LIMIT).forEach((item, index) => {
     list.append(el("li", { class: item.dir ? "dir" : "" },
-      el("span", { class: "path" }, item.dir ? item.path + "/" : item.path),
+      pathMeta(item.path, { isDir: item.dir }),
       el("span", { class: "size" }, item.dir ? "folder" : formatBytes(item.file.size)),
-      el("button", { type: "button", class: "icon-btn", "aria-label": `Remove ${item.path}`, onclick: () => removeItem(index) }, "×")
+      el("button", { type: "button", class: "icon-btn", "aria-label": `Remove ${item.path}`, disabled: !!createController, onclick: () => removeItem(index) }, "×")
     ));
   });
   if (items.length > LIST_LIMIT) list.append(el("li", { class: "more" }, `and ${items.length - LIST_LIMIT} more`));
@@ -207,7 +284,7 @@ $("#folder-input").addEventListener("change", (e) => {
   e.target.value = "";
   renderCreateList();
 });
-if (!("webkitdirectory" in document.createElement("input")) || /iPhone|iPad|iPod/.test(navigator.userAgent)) {
+if (!("webkitdirectory" in document.createElement("input")) || isIOS || /Android/.test(navigator.userAgent)) {
   $("#folder-label").hidden = true;
 }
 wireDrop($("#create-drop"), addFromDataTransfer);
@@ -225,7 +302,7 @@ function updateOptions() {
   const hint = $("#enc-hint");
   hint.classList.toggle("warn", enc === "zipcrypto");
   hint.textContent = enc === "aes"
-    ? "AES-256 is strong. Some built-in unzip tools (for example in Windows File Explorer or macOS Archive Utility) may not open it; 7-Zip, WinZip, Keka, The Unarchiver and this site can. File names stay visible; only file contents are encrypted."
+    ? "AES-256 is strong. Some built-in unzip tools (for example Windows File Explorer, macOS Archive Utility or the iPhone Files app) may not open it; 7-Zip, WinZip, Keka, The Unarchiver and this site can. File names stay visible; only file contents are encrypted."
     : "ZipCrypto opens almost everywhere but can be cracked with free tools. Use it only for compatibility, not for sensitive files. File names stay visible.";
 }
 for (const r of document.querySelectorAll('input[name="format"]')) r.addEventListener("change", updateOptions);
@@ -238,16 +315,25 @@ $("#pw-toggle").addEventListener("click", (e) => {
   e.target.textContent = show ? "Hide" : "Show";
   e.target.setAttribute("aria-pressed", String(show));
 });
+$("#password").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); $("#password-confirm").focus(); } });
+for (const id of ["#password-confirm", "#archive-name"]) {
+  $(id).addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); e.target.blur(); } });
+}
 
-if (window.showSaveFilePicker) $("#save-picker-row").hidden = false;
+if (window.showSaveFilePicker && !isTouch) $("#save-picker-row").hidden = false;
 
-function showCreateResult(...nodes) { $("#create-result").replaceChildren(...nodes); }
+function showCreateResult(...nodes) {
+  createCard?.release();
+  createCard = null;
+  $("#create-result").replaceChildren(...nodes);
+}
 
 async function createArchive() {
   const fmt = format();
   const password = fmt === "zip" ? $("#password").value : "";
   if (password && password !== $("#password-confirm").value) {
     showCreateResult(el("p", { class: "error" }, "The passwords do not match."));
+    reveal($("#create-result"));
     return;
   }
   const name = (safePath($("#archive-name").value.trim()).replace(/\//g, "_") || "archive") + "." + fmt;
@@ -256,7 +342,7 @@ async function createArchive() {
 
   let out;
   try {
-    out = await openOutput(name, MIME[fmt], $("#save-picker").checked);
+    out = await openOutput(name, MIME[fmt], $("#save-picker").checked && !$("#save-picker-row").hidden);
   } catch (e) {
     if (!isAbort(e)) showCreateResult(el("p", { class: "error" }, friendlyError(e)));
     return;
@@ -264,10 +350,10 @@ async function createArchive() {
 
   createController = new AbortController();
   const { signal } = createController;
-  $("#create-btn").disabled = true;
+  document.activeElement?.blur?.();
   $("#create-cancel").hidden = false;
   showCreateResult();
-  if (lastResultUrl) { URL.revokeObjectURL(lastResultUrl); lastResultUrl = null; }
+  renderCreateList();
 
   const box = $("#create-progress");
   const report = throttle((done) => setProgress(box, totalBytes ? done / totalBytes : 1, `${formatBytes(done)} of ${formatBytes(totalBytes)}`));
@@ -303,22 +389,30 @@ async function createArchive() {
     }
 
     const blob = await out.finish();
-    setProgress(box, 1, `Finished in ${((performance.now() - started) / 1000).toFixed(1)} s`);
-    const nodes = [el("p", { class: "ok" }, `${name} is ready`)];
+    box.hidden = true;
+    const seconds = ((performance.now() - started) / 1000).toFixed(1);
     if (blob) {
       const pct = totalBytes ? Math.round((1 - blob.size / totalBytes) * 100) : 0;
-      nodes.push(el("p", { class: "muted" }, `${formatBytes(totalBytes)} → ${formatBytes(blob.size)}${totalBytes && pct > 0 ? ` (${pct}% smaller)` : ""}${password ? ` · ${$("#encryption").value === "aes" ? "AES-256" : "ZipCrypto"} encrypted` : ""}`));
-      lastResultUrl = URL.createObjectURL(blob);
-      nodes.push(el("p", {}, el("a", { class: "primary", href: lastResultUrl, download: name }, "Download " + name)));
-      triggerDownload(blob, name);
+      const enc = password ? ` · ${$("#encryption").value === "aes" ? "AES-256" : "ZipCrypto"} encrypted` : "";
+      const card = outputCard({
+        title: `${name} is ready`,
+        lines: [`${formatBytes(totalBytes)} → ${formatBytes(blob.size)}${pct > 0 ? ` (${pct}% smaller)` : ""}${enc} · ${seconds} s`],
+        files: [toFile(blob, name)],
+        onError: (m) => $("#create-result").append(el("p", { class: "error" }, m))
+      });
+      showCreateResult(card.node);
+      createCard = card;
+      if (!isTouch) triggerDownload(blob, name);
     } else {
-      nodes.push(el("p", { class: "muted" }, "Saved to the location you chose."));
+      showCreateResult(el("p", { class: "ok" }, `${name} saved`), el("p", { class: "muted" }, `Saved to the location you chose · ${seconds} s`));
     }
-    showCreateResult(...nodes);
+    reveal($("#create-result"));
   } catch (e) {
     out.abort();
     box.hidden = true;
-    showCreateResult(el("p", { class: isAbort(e) || signal.aborted ? "muted" : "error" }, isAbort(e) || signal.aborted ? "Cancelled." : friendlyError(e)));
+    const cancelled = isAbort(e) || signal.aborted;
+    showCreateResult(el("p", { class: cancelled ? "muted" : "error" }, cancelled ? "Cancelled." : friendlyError(e)));
+    reveal($("#create-result"));
   } finally {
     createController = null;
     $("#create-cancel").hidden = true;
@@ -333,6 +427,7 @@ $("#create-cancel").addEventListener("click", () => createController?.abort());
 
 let archive = null;
 let extractController = null;
+let extractCard = null;
 
 async function detectFormat(file) {
   const head = new Uint8Array(await file.slice(0, 4).arrayBuffer());
@@ -349,6 +444,17 @@ function gunzipName(name) {
 
 function showInfo(...nodes) { $("#extract-info").replaceChildren(...nodes); }
 
+function showExtractResult(...nodes) {
+  extractCard?.release();
+  extractCard = null;
+  $("#extract-result").replaceChildren(...nodes);
+  if (nodes.length) reveal($("#extract-result"));
+}
+
+function extractError(message) {
+  showExtractResult(el("p", { class: "error" }, message));
+}
+
 function resetExtract() {
   archive?.reader?.close().catch(() => {});
   archive = null;
@@ -358,7 +464,9 @@ function resetExtract() {
   $("#extract-actions").hidden = true;
   $("#extract-list-wrap").hidden = true;
   $("#extract-progress").hidden = true;
+  $("#extract-bar").hidden = true;
   showInfo();
+  showExtractResult();
 }
 
 async function openArchive(file) {
@@ -408,14 +516,17 @@ async function openArchive(file) {
     const total = fileEntries.reduce((s, e) => s + (e.size || 0), 0);
     showInfo(
       el("p", { class: "name" }, file.name),
-      el("p", { class: "muted" }, `${label} · ${fileEntries.length} file${fileEntries.length === 1 ? "" : "s"} · ${formatBytes(file.size)} → ${formatBytes(total)}${archive.encrypted ? ` · ${archive.method} encrypted` : ""}`)
+      el("p", { class: "muted" }, `${label} · ${plural(fileEntries.length, "file")} · ${formatBytes(file.size)} → ${formatBytes(total)}${archive.encrypted ? ` · ${archive.method} encrypted` : ""}`)
     );
     $("#unlock-form").hidden = !archive.encrypted;
-    if (archive.encrypted) $("#extract-password").focus();
+    if (archive.encrypted && !isTouch) $("#extract-password").focus();
+
+    $("#save-folder-btn").hidden = !window.showDirectoryPicker || isTouch;
+    $("#download-all-btn").textContent = isTouch && canShareAny() ? "Save all files" : "Download all";
+    $("#download-all-btn").hidden = fileEntries.length < 2;
     $("#convert-btn").hidden = kind === "zip" && !archive.encrypted;
     $("#convert-btn").textContent = archive.encrypted ? "Save as ZIP without password" : "Convert to ZIP";
-    $("#save-folder-btn").hidden = !window.showDirectoryPicker;
-    $("#extract-actions").hidden = false;
+    $("#extract-actions").hidden = $("#save-folder-btn").hidden && $("#download-all-btn").hidden && $("#convert-btn").hidden;
     renderExtractList();
   } catch (e) {
     showInfo(el("p", { class: "error" }, friendlyError(e)));
@@ -430,20 +541,26 @@ function renderExtractList() {
   const busy = !!extractController;
   for (const id of ["#save-folder-btn", "#download-all-btn", "#convert-btn"]) $(id).disabled = locked || busy;
   $("#extract-cancel").hidden = !busy;
-  $("#extract-list-wrap").hidden = archive.entries.length === 0;
-  const files = archive.entries.filter((e) => !e.dir).length;
-  $("#extract-summary").textContent = `${archive.entries.length} item${archive.entries.length === 1 ? "" : "s"} (${files} file${files === 1 ? "" : "s"})`;
-  archive.entries.slice(0, LIST_LIMIT).forEach((entry) => {
-    list.append(el("li", { class: entry.dir ? "dir" : "" },
-      el("span", { class: "path" }, (entry.encrypted && locked ? "🔒 " : "") + entry.path),
-      el("span", { class: "size" }, entry.dir ? "folder" : formatBytes(entry.size)),
-      entry.dir ? null : el("button", {
+  $("#extract-bar").hidden = !busy;
+  const files = archive.entries.filter((e) => !e.dir);
+  const folders = new Set();
+  for (const e of archive.entries) {
+    const dir = e.dir ? e.path.replace(/\/+$/, "") : splitPath(e.path).dir;
+    if (dir) folders.add(dir);
+  }
+  $("#extract-list-wrap").hidden = files.length === 0;
+  $("#extract-summary").textContent = plural(files.length, "file") + (folders.size ? ` in ${plural(folders.size, "folder")}` : "");
+  files.slice(0, LIST_LIMIT).forEach((entry) => {
+    list.append(el("li", {},
+      pathMeta(entry.path, { prefix: entry.encrypted && locked ? "🔒 " : "" }),
+      el("span", { class: "size" }, formatBytes(entry.size)),
+      el("button", {
         type: "button", class: "icon-btn", "aria-label": `Download ${entry.path}`, title: "Download",
-        disabled: (entry.encrypted && locked) || busy, onclick: () => downloadEntry(entry)
+        disabled: (entry.encrypted && locked) || busy, onclick: () => extractOne(entry)
       }, "↓")
     ));
   });
-  if (archive.entries.length > LIST_LIMIT) list.append(el("li", { class: "more" }, `and ${archive.entries.length - LIST_LIMIT} more`));
+  if (files.length > LIST_LIMIT) list.append(el("li", { class: "more" }, `and ${files.length - LIST_LIMIT} more`));
 }
 
 function entryOptions(entry, extra = {}) {
@@ -471,8 +588,9 @@ $("#unlock-form").addEventListener("submit", async (e) => {
     await target.zipEntry.getData(new zip.BlobWriter(), { password, checkPasswordOnly: true });
     archive.password = password;
     archive.unlocked = true;
+    $("#extract-password").blur();
     $("#unlock-form").hidden = true;
-    showInfo(...$("#extract-info").childNodes, el("p", { class: "ok" }, "Unlocked"));
+    $("#extract-info").append(el("p", { class: "ok" }, "Unlocked"));
     renderExtractList();
   } catch (err) {
     errorBox.textContent = friendlyError(err, true);
@@ -481,26 +599,35 @@ $("#unlock-form").addEventListener("submit", async (e) => {
 
 async function runExtractTask(task) {
   extractController = new AbortController();
+  showExtractResult();
   renderExtractList();
   const box = $("#extract-progress");
   try {
     await task(extractController.signal, box);
   } catch (e) {
-    box.hidden = true;
-    if (!isAbort(e) && !extractController.signal.aborted) showInfo(...$("#extract-info").childNodes, el("p", { class: "error" }, friendlyError(e, archive?.encrypted)));
+    if (!isAbort(e) && !extractController.signal.aborted) extractError(friendlyError(e, archive?.encrypted));
+    else showExtractResult(el("p", { class: "muted" }, "Cancelled."));
   } finally {
+    box.hidden = true;
     extractController = null;
     renderExtractList();
   }
 }
 
-function downloadEntry(entry) {
+function showFilesCard(title, lines, files) {
+  const card = outputCard({ title, lines, files, onError: (m) => $("#extract-result").append(el("p", { class: "error" }, m)) });
+  showExtractResult(card.node);
+  extractCard = card;
+}
+
+function extractOne(entry) {
   return runExtractTask(async (signal, box) => {
-    const report = throttle((p, t) => setProgress(box, t ? p / t : 1, `${baseName(entry.path)}: ${formatBytes(t ? entry.size * (p / t) : 0)} of ${formatBytes(entry.size)}`));
-    setProgress(box, 0, `Extracting ${baseName(entry.path)}…`);
+    const name = baseName(entry.path);
+    const report = throttle((p, t) => setProgress(box, t ? p / t : 1, `${name}: ${formatBytes(t ? entry.size * (p / t) : 0)} of ${formatBytes(entry.size)}`));
+    setProgress(box, 0, `Extracting ${name}…`);
     const blob = await entryBlob(entry, { signal, onprogress: report });
-    setProgress(box, 1, `Extracted ${baseName(entry.path)}`);
-    triggerDownload(blob, baseName(entry.path));
+    showFilesCard(`${name} is ready`, [formatBytes(blob.size)], [toFile(blob, name)]);
+    if (!isTouch) triggerDownload(blob, name);
   });
 }
 
@@ -519,7 +646,7 @@ $("#save-folder-btn").addEventListener("click", async () => {
   try {
     root = await window.showDirectoryPicker({ mode: "readwrite" });
   } catch (e) {
-    if (!isAbort(e)) showInfo(...$("#extract-info").childNodes, el("p", { class: "error" }, friendlyError(e)));
+    if (!isAbort(e)) extractError(friendlyError(e));
     return;
   }
   await runExtractTask(async (signal, box) => {
@@ -552,24 +679,37 @@ $("#save-folder-btn").addEventListener("click", async () => {
       }
       batch.finish(entry);
     }
-    setProgress(box, 1, `Saved ${files.length} file${files.length === 1 ? "" : "s"} to “${root.name}”`);
+    showExtractResult(el("p", { class: "ok" }, `Saved ${plural(files.length, "file")} to “${root.name}”`));
   });
 });
 
 $("#download-all-btn").addEventListener("click", () => {
   const files = archive.entries.filter((e) => !e.dir);
-  if (files.length > 10 && !confirm(`This will start ${files.length} separate downloads. Your browser may ask you to allow multiple downloads. Continue?`)) return;
+  const sharing = isTouch && canShareAny();
+  if (!sharing && files.length > 10 && !confirm(`This will start ${files.length} separate downloads. Your browser may ask you to allow multiple downloads. Continue?`)) return;
   return runExtractTask(async (signal, box) => {
     const batch = makeBatchReporter(box, files);
     setProgress(box, 0, "Extracting…");
+    const out = [];
     for (const entry of files) {
       if (signal.aborted) throw new DOMException("Cancelled", "AbortError");
       const blob = await entryBlob(entry, { signal, onprogress: batch.track(entry) });
-      triggerDownload(blob, baseName(entry.path));
       batch.finish(entry);
-      await new Promise((r) => setTimeout(r, 300));
+      if (sharing) {
+        out.push(toFile(blob, baseName(entry.path)));
+      } else {
+        triggerDownload(blob, baseName(entry.path));
+        await new Promise((r) => setTimeout(r, 300));
+      }
     }
-    setProgress(box, 1, `Downloaded ${files.length} file${files.length === 1 ? "" : "s"}`);
+    if (sharing && canShare(out)) {
+      showFilesCard(`${plural(out.length, "file")} ready`, ["Folders are not kept when saving this way. To keep them, use Convert to ZIP."], out);
+    } else if (sharing) {
+      for (const f of out) { triggerDownload(f, f.name); await new Promise((r) => setTimeout(r, 300)); }
+      showExtractResult(el("p", { class: "ok" }, `Downloaded ${plural(out.length, "file")}`));
+    } else {
+      showExtractResult(el("p", { class: "ok" }, `Downloaded ${plural(files.length, "file")}`));
+    }
   });
 });
 
@@ -597,8 +737,8 @@ $("#convert-btn").addEventListener("click", () => runExtractTask(async (signal, 
     throw e;
   }
   const blob = await out.finish();
-  setProgress(box, 1, `Created ${name} (${formatBytes(blob.size)})`);
-  triggerDownload(blob, name);
+  showFilesCard(`${name} is ready`, [formatBytes(blob.size)], [toFile(blob, name)]);
+  if (!isTouch) triggerDownload(blob, name);
 }));
 
 $("#extract-cancel").addEventListener("click", () => extractController?.abort());
